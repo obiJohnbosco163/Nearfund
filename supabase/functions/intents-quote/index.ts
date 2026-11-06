@@ -12,7 +12,7 @@ Deno.serve(async (request: Request) => {
     if (request.method !== 'POST') return new Response(JSON.stringify({ error: 'Method not allowed' }), { status: 405, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
     const body = await request.json();
     if (!body?.originAsset || !body?.amount || !body?.recipient) return new Response(JSON.stringify({ error: 'Missing quote fields' }), { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
-    const response = await fetch('https://1click.chaindefuser.com/v0/quote', {
+    const response = await fetch(`${intentsApi}/v0/quote`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...(Deno.env.get('NEAR_INTENTS_API_KEY') ? { Authorization: `Bearer ${Deno.env.get('NEAR_INTENTS_API_KEY')}` } : {}) },
       body: JSON.stringify({ dry: body.dry !== false, swapType: 'EXACT_INPUT', originAsset: body.originAsset, destinationAsset: body.destinationAsset ?? 'nep141:wrap.near', amount: String(body.amount), recipient: { wallet: body.recipient, chain: 'near' } }),
