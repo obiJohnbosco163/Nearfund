@@ -1,0 +1,3 @@
+[functions.intents-quote]
+verify_jwt = false
+entrypoint = "./functions/intents-quote/index.ts"
