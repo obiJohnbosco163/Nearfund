@@ -3,7 +3,9 @@ import { createClient } from '@supabase/supabase-js';
 const url = import.meta.env.VITE_SUPABASE_URL as string;
 const anonKey = import.meta.env.VITE_SUPABASE_ANON_KEY as string;
 
-export const supabase = createClient(url, anonKey);
+export const supabase = url && anonKey ? createClient(url, anonKey) : null;
+export const supabaseConfigurationMessage =
+  'Supabase is not configured. Add VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY to .env.local to enable live data.';
 
 export type CampaignRow = {
   id: string;
