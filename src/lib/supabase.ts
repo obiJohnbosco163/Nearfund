@@ -9,6 +9,8 @@ export const supabaseConfigurationMessage =
 
 export type CampaignRow = {
   id: string;
+  contract_id: string | null;
+  contract_campaign_id: string | null;
   title: string;
   description: string;
   category: string;

@@ -1,3 +1,7 @@
 [functions.intents-quote]
 verify_jwt = false
 entrypoint = "./functions/intents-quote/index.ts"
+
+[functions.near-relay]
+verify_jwt = false
+entrypoint = "./functions/near-relay/index.ts"
