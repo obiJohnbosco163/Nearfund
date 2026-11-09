@@ -1009,7 +1009,7 @@ function App() {
     </div>;
   }
 
-  if (window.location.pathname === '/explore') {
+  if (/^\/explore\/?$/.test(window.location.pathname)) {
     return <div className="app-shell">
       <ExplorePage
         campaigns={campaigns}
