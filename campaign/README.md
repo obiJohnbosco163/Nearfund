@@ -1,50 +1,77 @@
 # Nearfund campaign contract
 
-Rust / NEAR SDK implementation. This is an audited MVP; it has been compiled and tested in this workspace. Remix's Solidity compiler cannot compile it.
+This Rust contract implements NEAR campaigns with a fixed goal, deadline, beneficiary, category, and settlement asset. It accepts native NEAR or a specified NEP-141 fungible token, records donor contributions, and enforces payout or refund eligibility after the deadline.
 
-## Build and test
+The contract is the source of truth for campaign terms, accepted contribution totals, and claims. It does not implement cross-chain routing, campaign-level milestones, co-signer approval, partial payouts, or platform fees.
 
-Install Rust and cargo-near, then run from this directory:
+## Reproducible local checks
+
+Requirements: Rust `1.95.0` with the `wasm32-unknown-unknown` target (the repository's `rust-toolchain.toml` selects the toolchain), and `cargo-near`.
+
+From this directory:
 
 ```sh
 cargo test
 cargo near build non-reproducible-wasm
 ```
 
-Commit the generated Cargo.lock for reproducible dependency resolution. Deploy the generated WASM using NEAR tooling, batching deployment and `new {}` initialization together under the contract account. The initializer is private.
+**Expected result:** `cargo test` passes 13 unit tests. The build produces `target/near/nearfund_campaign.wasm` and its ABI at `target/near/nearfund_campaign_abi.json`. The `non-reproducible-wasm` build is for local development; it does not claim a reproducible release build. The current build emits deprecation warnings for `env::promise_result` in transfer callbacks.
 
-## Policy
+The unit tests exercise contract logic in mocked NEAR contexts. They do not deploy to a network, run a sandbox, or validate behavior of a real FT contract.
 
-- Anyone can create multiple campaigns. Each fixes its goal, deadline, category, beneficiary and a single asset.
-- `token: null` means NEAR (24 decimal places). For USDC, use the independently verified NEP-141 contract for the selected network and that contract's actual decimals. Merely choosing a token contract does not certify it as USDC.
-- A deadline is Unix epoch **nanoseconds**, JSON-encoded as a decimal string. Goals, donations and balances use integer smallest units, JSON-encoded as strings.
-- Donations stop at the deadline. Reaching a goal does not end a campaign early.
-- After the deadline: total >= goal permits one full beneficiary payout, including overfunding; otherwise each donor can claim their full contribution. No fees, early payouts, cancellations or partial refunds.
-- Anyone can trigger a claim but cannot change its recipient. The creator has no privileged withdrawal authority.
-- `total` is historical gross accepted donations, not a live escrow balance. Read payout/refund states to determine obligations.
+## Deploy and initialize
 
-## Usage
+Build the WASM above, then deploy `target/near/nearfund_campaign.wasm` to a NEAR **testnet** contract account with NEAR tooling. Initialize it as part of the deployment batch by calling `new {}` signed by the contract account. Initialization is private and can only be called by the contract itself. Do not initialize a second time.
 
-1. Creators and donors first call payable `storage_deposit {}` with NEAR to fund their persistent records; `get_storage_credit` returns remaining credit. A small amount such as 0.05 NEAR is usually ample for initial records, but the exact cost depends on storage size and network pricing. Unused credit is non-withdrawable in this MVP and is separate from donations.
-2. Creator calls `create_campaign` with `goal`, `deadline`, `category`, `beneficiary`, and `token` (an account ID or null). No attached deposit. Store the returned ID.
-3. Native donors call payable `donate {"campaign_id":"0"}` and attach the donation.
-4. FT donors call the selected token's `ft_transfer_call` with this contract as `receiver_id`, an integer-string `amount`, and `msg` containing the JSON string `{"campaign_id":"0"}`. Attach the token's required 1 yoctoNEAR and sufficient gas (e.g. 150 Tgas). The Nearfund account must already be registered with that token; the sender must prepay Nearfund storage.
-5. After the deadline, call `claim_payout {"campaign_id":"0"}` or `claim_refund {"campaign_id":"0","donor":"alice.testnet"}`. Attach at least 70 Tgas, and exactly 1 yoctoNEAR for FT claims or zero for NEAR claims. FT recipients must be registered with the token before transfer.
+Use testnet accounts and funds for evaluation. This contract repository does not include deployment credentials or a preconfigured contract account. For mainnet deployment, release-build reproducibility, deployment-key governance, and independent security review are still required.
 
-Views: `get_campaign`, `get_campaign_count`, `get_contribution`, `get_storage_credit`. Enumerate IDs from zero to count minus one with an off-chain indexer; no unbounded on-chain listing.
+## Judge walkthrough
 
-## Public ledger and asynchronous safety
+These method calls can be made with NEAR-compatible contract tooling against an initialized deployment. JSON uses decimal strings for `U64` and `U128` values; account IDs are strings. Amounts are in the settlement asset's smallest units. For native NEAR, `1 NEAR = 10^24` yoctoNEAR.
 
-NEP-297-formatted `nearfund` logs record campaign creation, donations, pending transfers and their callback outcomes. Index successful receipts to render the donation/withdrawal ledger; an attempted transfer is not proof of a completed payment.
+1. **Prepay campaign storage.** From the creator account, call payable `storage_deposit {}` with a positive NEAR deposit. **See:** the returned remaining storage credit. The required amount depends on actual storage growth and network storage pricing; check `get_storage_credit {"account":"creator.testnet"}` rather than relying on a fixed estimate. Unused credit cannot be withdrawn in this MVP.
+2. **Create a native NEAR campaign.** From that creator, call `create_campaign` with no attached deposit and arguments such as:
 
-A failed transfer resets its claim for retry only when its callback observes failure. Successful transfers mark claims paid. Pending claims cannot be concurrently paid again. If a callback itself fails, the claim stays pending: there is deliberately no timeout reset, since the transfer may already have succeeded. Receipt investigation and a carefully reviewed migration/reconciliation process would then be needed. Never blindly retry ambiguous transfers.
+   ```json
+   {
+     "goal": "1000000000000000000000000",
+     "deadline": "1799999999000000000",
+     "category": "Education",
+     "beneficiary": "beneficiary.testnet",
+     "token": null
+   }
+   ```
 
-Only trusted, compliant token contracts should be used. A malicious FT contract can falsify donations in its own campaigns or return pathological results. Tokens are isolated per campaign, but this is not a vetted token registry. USDC account freezing, recipient registration, token implementation behavior and contract upgrade-key security remain operational risks. Beneficiary accounts must be controlled and able to receive the settlement asset. Direct native or FT transfers bypassing the donation entry points are not attributed or recoverable through this API.
+   Choose a future Unix timestamp in nanoseconds for `deadline`, and ensure the creator has enough storage credit. **See:** a campaign ID. Call `get_campaign {"campaign_id":"0"}` (replace `0` with the returned ID) to inspect its terms, current total, status, and payout state.
+3. **Donate.** From a donor who has prepaid storage, call payable `donate {"campaign_id":"0"}` and attach a positive NEAR amount. **See:** the updated campaign `total` and the donor's contribution from `get_contribution {"campaign_id":"0","donor":"donor.testnet"}`. A donation at or after the deadline is rejected.
+4. **Check the goal outcome.** `get_campaign` reports `active` before the deadline, then `successful` when total contributions meet or exceed the goal, or `failed` otherwise. **See:** reaching the goal does not close an active campaign early.
+5. **Claim after the deadline.** For a successful campaign, call `claim_payout {"campaign_id":"0"}`; for a failed campaign, call `claim_refund {"campaign_id":"0","donor":"donor.testnet"}`. Either call may be submitted by any account, but the contract fixes the recipient. **See:** the claim state changes to `pending`, then to `paid` on successful transfer. A failed transfer resets the claim to `unclaimed` when its callback observes failure, allowing a retry. Claims require at least 70 Tgas. Native NEAR claims attach zero; FT claims attach exactly 1 yoctoNEAR.
 
-## Integration boundaries
+Contract views are `get_campaign`, `get_campaign_count`, `get_contribution`, and `get_storage_credit`. Enumerate campaign IDs from zero up to `get_campaign_count - 1`; the contract does not expose an unbounded campaign-list method.
 
-NEAR Intents swaps/cross-chain routing, social login, gas sponsorship, Next.js UI and indexing are separate integrations, not implemented here. An adapter must actually deliver the settlement asset through `donate` or `ft_transfer_call`. Refund ownership follows the on-chain predecessor or FT sender, so a router is recorded as donor if it sends the funds. Human attribution or refunds through a router require an authenticated routing design; arbitrary donor IDs are intentionally not accepted.
+## Asset and accounting rules
 
-Milestones and co-signers are not implemented as on-chain approval rules in this version. Setting a properly configured Sputnik DAO or Trezu-controlled account as beneficiary places subsequent spending under that account's governance; it does not add campaign-level milestone approvals. These rules require a separate audited state machine before enabling early or partial payouts.
+- Each campaign accepts one asset: `token: null` for native NEAR, or the account ID of one NEP-141 token contract.
+- Campaign goals and donation amounts use that asset's smallest units. For a token, use that specific contract's decimals and verify the token contract independently; the contract does not certify a token as USDC.
+- Native donations use `donate` with attached NEAR. FT donations use the token's `ft_transfer_call` with this contract as receiver and `msg` set to the JSON string `{"campaign_id":"0"}`. The token must have registered this contract, and each donor must have prepaid storage here.
+- For FT claims, the beneficiary or donor must be registered with the token so it can receive the transfer. Failed or malformed FT transfer calls may return the full amount as unused through the NEP-141 resolver.
+- Donations stop at the deadline. After it, a campaign with `total >= goal` permits one full beneficiary payout, including overfunding; otherwise, donors can each claim their full recorded contribution.
+- `total` is historical gross accepted donations. Read payout/refund states to determine remaining obligations; do not treat `total` as a live escrow balance.
+- There are no fees, early payouts, cancellations, partial refunds, or campaign-level milestone/co-signer rules.
 
-Before real funds: run unit tests, add sandbox tests against the exact USDC contract, test failed transfers and callback failures, verify storage/gas requirements, secure deployment keys, and obtain an independent audit.
+## Events and asynchronous transfers
+
+The contract emits NEP-297-formatted `EVENT_JSON:` logs under standard `nearfund`, version `1.0.0`. Events include campaign creation, donations, and pending/succeeded/failed payout and refund transfers. Index successful transaction receipts to build an activity ledger; a pending event or attempted transfer alone does not prove that the recipient was paid.
+
+Claims are marked pending before an asynchronous transfer so they cannot be claimed concurrently. A callback that observes a failed transfer resets the claim for retry; one that observes success marks it paid. If the callback itself fails, the claim can remain pending. There is intentionally no timeout reset because the transfer may already have succeeded. Investigate receipts and reconcile carefully; never blindly retry an ambiguous transfer.
+
+## Limitations and integration boundaries
+
+- Only use trusted, compliant NEP-141 contracts. A malicious token may falsify transfers or return pathological results. This contract has no vetted token registry.
+- Token registration, account freezes, token behavior, beneficiary account control, and contract upgrade-key security are operational risks.
+- Direct transfers to the contract that bypass `donate` or `ft_transfer_call` are not attributed to a campaign and cannot be recovered through this API.
+- For FT campaigns, the contract must be registered with the token before it can transfer tokens. Claims also depend on recipient registration.
+- NEAR Intents routing, social sign-in, gas sponsorship, frontend integration, and event indexing are outside this contract. A router that donates becomes the recorded donor; refunds go to the recorded donor account.
+- If an account is a DAO-controlled beneficiary, its own governance may control spending after payout. That does not add campaign-level approval rules to this contract.
+
+Before handling real funds, add sandbox tests against the exact token contract, test failed transfers and callback failures on the target network, verify storage and gas requirements, secure deployment and upgrade keys, and obtain an independent security audit.
